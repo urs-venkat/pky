@@ -1,53 +1,33 @@
 const Salary = require('../models/Salary');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
+const Assignment = require('../models/Assignment');
 
-const calculateSalary = (salaryStructure, presentDays, halfDays, paidLeaves, totalWorkingDays) => {
-  const { basicSalary, hra, allowances, pfApplicable, pfAmount, esiApplicable, esiAmount } = salaryStructure;
-
-  const grossSalary = basicSalary + hra + allowances;
-  const perDaySalary = grossSalary / totalWorkingDays;
+const calculateDailySalary = (dailyRate, presentDays, halfDays, paidLeaves) => {
   const daysWorked = presentDays + paidLeaves + (halfDays * 0.5);
-  const monthlyEarnings = perDaySalary * daysWorked;
-
-  let pfDeduction = 0;
-  let esiDeduction = 0;
-
-  if (pfApplicable) {
-    pfDeduction = pfAmount || (basicSalary * 0.12);
-  }
-
-  if (esiApplicable) {
-    esiDeduction = esiAmount || (grossSalary * 0.0075);
-  }
-
-  const totalDeductions = pfDeduction + esiDeduction;
-  const netSalary = monthlyEarnings - totalDeductions;
+  const totalEarnings = dailyRate * daysWorked;
 
   return {
-    grossSalary,
-    perDaySalary,
+    dailyRate,
     daysWorked,
-    monthlyEarnings,
-    pfDeduction,
-    esiDeduction,
-    totalDeductions,
-    netSalary
+    totalEarnings
   };
 };
 
 exports.generateSalary = async (req, res) => {
   try {
-    const { employeeId, month, year, totalWorkingDays } = req.body;
+    const { employeeId, month, year, assignmentId } = req.body;
+    const companyId = req.user.companyId;
 
-    const employee = await User.findOne({
-      _id: employeeId,
-      role: 'employee',
-      companyId: req.user.companyId
-    });
+    const assignment = await Assignment.findOne({
+      _id: assignmentId,
+      employeeId,
+      companyId,
+      status: 'active'
+    }).populate('employeeId', 'name email');
 
-    if (!employee) {
-      return res.status(404).json({ message: 'Employee not found' });
+    if (!assignment) {
+      return res.status(404).json({ message: 'Assignment not found' });
     }
 
     const startDate = new Date(year, month - 1, 1);
@@ -55,6 +35,7 @@ exports.generateSalary = async (req, res) => {
 
     const attendanceRecords = await Attendance.find({
       employeeId,
+      companyId,
       date: { $gte: startDate, $lte: endDate }
     });
 
@@ -80,27 +61,29 @@ exports.generateSalary = async (req, res) => {
       }
     });
 
-    const salaryCalculation = calculateSalary(
-      employee.salaryStructure,
+    const salaryCalculation = calculateDailySalary(
+      assignment.dailySalary,
       presentDays,
       halfDays,
-      paidLeaves,
-      totalWorkingDays
+      paidLeaves
     );
 
-    const existingSalary = await Salary.findOne({ employeeId, month, year });
+    const existingSalary = await Salary.findOne({
+      employeeId,
+      companyId,
+      month,
+      year
+    });
 
     if (existingSalary) {
       Object.assign(existingSalary, {
-        totalWorkingDays,
         presentDays,
         halfDays,
         paidLeaves,
         absentDays,
-        basicSalary: employee.salaryStructure.basicSalary,
-        hra: employee.salaryStructure.hra,
-        allowances: employee.salaryStructure.allowances,
-        ...salaryCalculation,
+        dailySalary: assignment.dailySalary,
+        daysWorked: salaryCalculation.daysWorked,
+        totalEarnings: salaryCalculation.totalEarnings,
         status: 'generated',
         generatedAt: Date.now()
       });
@@ -115,18 +98,17 @@ exports.generateSalary = async (req, res) => {
 
     const salary = new Salary({
       employeeId,
-      companyId: req.user.companyId,
+      companyId,
       month,
       year,
-      totalWorkingDays,
       presentDays,
       halfDays,
       paidLeaves,
       absentDays,
-      basicSalary: employee.salaryStructure.basicSalary,
-      hra: employee.salaryStructure.hra,
-      allowances: employee.salaryStructure.allowances,
-      ...salaryCalculation,
+      dailySalary: assignment.dailySalary,
+      daysWorked: salaryCalculation.daysWorked,
+      totalEarnings: salaryCalculation.totalEarnings,
+      assignmentId: assignment._id,
       status: 'generated'
     });
 
